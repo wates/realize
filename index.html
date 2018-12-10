@@ -1,0 +1,314 @@
+<html>
+
+<head>
+  <title>Learning WebGL &mdash; lesson 1</title>
+  <!--<meta http-equiv="content-type" content="text/html; charset=utf8">-->
+
+  <script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+  <script type="text/javascript" src="jq.js"></script>
+
+  <script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+    uniform vec4 rColor;
+    uniform vec4 lColor;
+    varying vec4 vColor;
+    varying vec2 vUV;
+    
+    vec3 reality(vec2 xy,vec3 bg_color,vec3 color1,vec3 color2){
+      float x=xy.x,y=xy.y;
+      float sr_bias=0.3;
+      float shape=min(1.0,(max(0.0,19.4-20.0*(abs(x)+abs(y)))
+                            *max(0.0,65.0-100.0*(max(abs(x),abs(y)))))
+                           +max(0.0,1.0-dot(vec2(abs(x+y)-sr_bias,abs(y-x)-sr_bias)*10.0,vec2(abs(x+y)-sr_bias,abs(y-x)-sr_bias)*10.0)+43.0)
+                  )*max(0.0,1.0-((max(0.0,11.7-20.0*(abs(x)+abs(y)))
+                                  *max(0.0,45.0-100.0*(max(abs(x),abs(y)))))
+                                +max(0.0,1.0-dot(vec2(abs(x+y)-sr_bias,abs(y-x)-sr_bias)*20.0,vec2(abs(x+y)-sr_bias,abs(y-x)-sr_bias)*20.0)+29.0))
+                  );
+      vec2 rxy=vec2(x-0.5,y+0.5);
+      vec2 lxy=vec2(x+0.5,y-0.5);
+      float rc=dot(rxy,rxy);
+      float lc=dot(lxy,lxy);
+      float q=rc+lc;
+      vec3 c=(rc/q)*color1+(lc/q)*color2;
+      vec3 t=vec3(shape,shape,shape);
+      return c*t+bg_color*(1.0-t);
+    }
+
+    void main(void) {
+      vec3 real=reality(vUV.yx,vColor.xyz,rColor.xyz,lColor.xyz);
+      gl_FragColor = vec4(real,1.0);
+    }
+  </script>
+
+  <script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 vaVertexPosition;
+    attribute vec4 vaVertexColor;
+    attribute vec3 vaUV;
+
+    varying vec4 vColor;
+    varying vec2 vUV;
+
+    void main(void) {
+        gl_Position = vec4(vaVertexPosition.xyz*2.0,1.0);
+        vColor = vaVertexColor;
+        vUV = vaUV.xy*2.0-1.0;
+    }
+  </script>
+
+
+  <script type="text/javascript">
+
+    var gl;
+    function initGL(canvas) {
+      try {
+        gl = canvas.getContext("experimental-webgl");
+        gl.viewportWidth = canvas.width;
+        gl.viewportHeight = canvas.height;
+      } catch (e) {
+      }
+      if (!gl) {
+        alert("Could not initialise WebGL, sorry :-(");
+      }
+    }
+
+    /**
+    * @param hsv 0~1
+    */
+    function HSVtoRGB(h, s, v) {
+      if (0 == s) {
+        return [v, v, v];
+      }
+      if (1 < s) s = 1;
+      if (h < 0) h++;
+      if (1 < h) h--;
+      var i = Math.floor(h * 6);
+      var f = h * 6 - i;
+      var p = v * (1 - s);
+      var q = v * (1 - f * s);
+      var t = v * (1 - (1 - f) * s);
+      switch (i) {
+        case 0:
+          return [v, t, p];
+        case 1:
+          return [q, v, p];
+        case 2:
+          return [p, v, t];
+        case 3:
+          return [p, q, v];
+        case 4:
+          return [t, p, v];
+        default:
+          return [v, p, q];
+      }
+    }
+
+    function getShader(gl, id) {
+      var shaderScript = document.getElementById(id);
+      if (!shaderScript) {
+        return null;
+      }
+
+      var str = "";
+      var k = shaderScript.firstChild;
+      while (k) {
+        if (k.nodeType == 3) {
+          str += k.textContent;
+        }
+        k = k.nextSibling;
+      }
+
+      var shader;
+      if (shaderScript.type == "x-shader/x-fragment") {
+        shader = gl.createShader(gl.FRAGMENT_SHADER);
+      } else if (shaderScript.type == "x-shader/x-vertex") {
+        shader = gl.createShader(gl.VERTEX_SHADER);
+      } else {
+        return null;
+      }
+
+      gl.shaderSource(shader, str);
+      gl.compileShader(shader);
+
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        alert(gl.getShaderInfoLog(shader));
+        return null;
+      }
+
+      return shader;
+    }
+
+    function getText(id) {
+      var shaderScript = document.getElementById(id);
+      if (!shaderScript) {
+        return null;
+      }
+
+      var str = "";
+      var k = shaderScript.firstChild;
+      while (k) {
+        if (k.nodeType == 3) {
+          str += k.textContent;
+        }
+        k = k.nextSibling;
+      }
+      return str;
+    }
+
+    var shaderProgram;
+
+    function initShaders() {
+      var fragmentShader = getShader(gl, "shader-fs");
+      var vertexShader = getShader(gl, "shader-vs");
+
+      shaderProgram = gl.createProgram();
+      gl.attachShader(shaderProgram, vertexShader);
+      gl.attachShader(shaderProgram, fragmentShader);
+      gl.linkProgram(shaderProgram);
+
+      if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+        alert("Could not initialise shaders");
+      }
+
+      gl.useProgram(shaderProgram);
+      shaderProgram.vertexAttribute = [];
+      getText("shader-vs").split('\n').forEach(function (a) {
+        var l = a.match(/va[A-Za-z]*;/);
+        var c = a.match(/vec[1-4]/);
+        a.match('attribute') && Array.isArray(l) && l.forEach(function (b) {
+          var name = b.slice(0, b.length - 1);
+          var attr = {
+            name: name,
+            len: Number(c[0][3]),
+            location: gl.getAttribLocation(shaderProgram, name)
+          };
+          shaderProgram.vertexAttribute.push(attr);
+          gl.enableVertexAttribArray(attr.location);
+        });
+      });
+
+      shaderProgram.rColor = gl.getUniformLocation(shaderProgram, "rColor");
+      shaderProgram.lColor = gl.getUniformLocation(shaderProgram, "lColor");
+    }
+
+    var squareVertexPositionBuffer = null;
+
+    var params = {
+      hue1: { name: "色相１", init: 0.55 },
+      hue2: { name: "色相２", init: 0.85 },
+      sat: { name: "彩度", init: 0.75 },
+    };
+    function initParams() {
+      for (var i in params) {
+        $('#parameters').append($('<li>').html(params[i].name + '<input id="params_' + i + '" type="text" value="' + JSON.stringify(params[i].init) + '" />'));
+      }
+    };
+    function getParams() {
+      var ret = {};
+      for (var i in params) {
+        ret[i] = Number(JSON.parse($('#params_' + i)[0].value)) || 0;
+      }
+      return ret;
+    }
+
+    function initBuffers() {
+      squareVertexPositionBuffer = squareVertexPositionBuffer || gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+      var vertices = [];
+      var c = [1.0, 1.0, 1.0, 1.0];
+
+      var vert = [];
+      vert = vert.concat([-0.5, -0.5, 0]);
+      vert = vert.concat(c);
+      vert = vert.concat([0, 0, 0]);
+
+      vert = vert.concat([0.5, -0.5, 0]);
+      vert = vert.concat(c);
+      vert = vert.concat([1, 0, 0]);
+
+      vert = vert.concat([-0.5, 0.5, 0]);
+      vert = vert.concat(c);
+      vert = vert.concat([0, 1, 0]);
+
+      vert = vert.concat([-0.5, 0.5, 0]);
+      vert = vert.concat(c);
+      vert = vert.concat([0, 1, 0]);
+
+      vert = vert.concat([0.5, -0.5, 0]);
+      vert = vert.concat(c);
+      vert = vert.concat([1, 0, 0]);
+
+      vert = vert.concat([0.5, 0.5, 0]);
+      vert = vert.concat(c);
+      vert = vert.concat([1, 1, 0]);
+
+
+      var l = vert.length;
+      for (var k = 0; k < l; k++) { vertices.push(vert[k]); }
+
+      var stride = shaderProgram.vertexAttribute.reduce(function (b, a) { return b + a.len; }, 0);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+      squareVertexPositionBuffer.numItems = vertices.length / stride;
+    }
+
+    var count = 0;
+
+    function drawScene() {
+      count++;
+      gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+      var offs = 0, stride = 0;
+      stride = shaderProgram.vertexAttribute.reduce(function (b, a) { return b + a.len * 4; }, 0);
+      shaderProgram.vertexAttribute.forEach(function (a) {
+        gl.vertexAttribPointer(a.location, a.len, gl.FLOAT, false, stride, offs);
+        offs += a.len * 4;
+      });
+      var P=getParams();
+      if($('#anim:checked').val()){
+        P.hue1+=count/300;
+        P.hue1-=Math.floor(P.hue1);
+        P.hue2+=count/300;
+        P.hue2-=Math.floor(P.hue2);
+      }
+      var c1=HSVtoRGB(P.hue1,P.sat,1.0);
+      var c2=HSVtoRGB(P.hue2,P.sat,1.0);
+      gl.uniform4f(shaderProgram.lColor, c1[0], c1[1], c1[2], 1.0);
+      gl.uniform4f(shaderProgram.rColor, c2[0], c2[1], c2[2], 1.0);
+      gl.drawArrays(gl.TRIANGLES, 0, squareVertexPositionBuffer.numItems);
+    }
+
+    function webGLStart() {
+      initParams();
+      var canvas = document.getElementById("lesson01-canvas");
+      initGL(canvas);
+      initShaders();
+      initBuffers();
+
+      gl.clearColor(0.0, 0.0, 0.0, 1.0);
+      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      // gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    }
+
+    setInterval(drawScene, 16);
+
+  </script>
+</head>
+
+
+<body onload="webGLStart();">
+  <table>
+    <tr>
+      <td>
+        <canvas id="lesson01-canvas" style="border: none;" width="512" height="512"></canvas>
+      </td>
+      <td>
+        <ul id="parameters"></ul>
+        <br />
+        <p><input type="checkbox" name="check" value="1" id="anim">animation</p>
+      </td>
+    </tr>
+  </table>
+</body>
+
+</html>
